@@ -1449,14 +1449,42 @@ function loadVoice(){
     voiceSrc[k]={x,m:VOICE_SAMPLES[k].m}; }
   return voiceSrc;
 }
+/* make the pitch marks consistent (each pulse aligned to the shape of the previous one) and measure grain levels */
+function prepSource(S){
+  if(S.ready) return S; const x=S.x, m=S.m.slice();
+  for(let k=1;k<m.length;k++){ const P=Math.max(16,m[k]-m[k-1]), h=P>>1, r=Math.max(2,Math.round(P*.18)); let best=-1e9, bs=0;
+    for(let sh=-r;sh<=r;sh++){ let c=0, e=0; for(let j=-h;j<h;j++){ const a=x[m[k-1]+j], b=x[m[k]+sh+j]; if(a===undefined||b===undefined) continue; c+=a*b; e+=b*b; }
+      const v=c/Math.sqrt(e+1e-9); if(v>best){ best=v; bs=sh; } }
+    m[k]+=bs; if(m[k]<=m[k-1]) m[k]=m[k-1]+1; }
+  S.m=m;
+  const ge=new Float32Array(m.length); for(let k=1;k<m.length-1;k++){ let e=0; for(let i=m[k-1];i<m[k+1];i++) e+=x[i]*x[i]; ge[k]=Math.sqrt(e/Math.max(1,m[k+1]-m[k-1])); }
+  const a=S.own?S.i0:1, b=S.own?S.i1:m.length-2, st=[...ge.slice(a,b)].sort((p,q)=>p-q);
+  S.ge=ge; S.gref=st[st.length>>1]||1; S.ga=a; S.gb=b;
+  // walk region: the longest run of clean, evenly loud pulses (no fading ends, no mis-detected pulses)
+  const ok=k=>{ if(k<1||k>=m.length-1) return false; const g=ge[k]/S.gref; if(g<.72||g>1.4) return false;
+    const P=m[k+1]-m[k], h=P>>1; let c=0,e1=0,e2=0; for(let j=-h;j<h;j++){ const u=x[m[k]+j]||0, v=x[m[k+1]+j]||0; c+=u*v; e1+=u*u; e2+=v*v; } return c/Math.sqrt(e1*e2+1e-12)>.85; };
+  let bs=a, bl=0; for(let k=a;k<=b;){ if(ok(k)){ let j=k; while(j<=b&&ok(j)) j++; if(j-k>bl){ bl=j-k; bs=k; } k=j; } else k++; }
+  if(bl>=12){ S.wa=bs; S.wb=bs+bl-1; } else { S.wa=a; S.wb=b; }
+  S.ready=true; return S;
+}
 function humanVoice(out,evs,T0,mD,o){
   const V=loadVoice(), sr=HV_SR, n=out.length;
   let seed=o.seed; const rand=()=>{ seed=(seed*16807)%2147483647; return seed/2147483647; };
-  const glide=.055, xf=.045, vRate=o.rate, vDepth=o.depth;
+  const glide=.055, xf=.045, vRate=o.rate, vDepth=window.HV_NOVIB?0:o.depth, jitAmt=window.HV_NOVIB?0:4;
   let ei=0, jit=0, jv=0, t=0, ph=rand()*6.28;
   const OS=o.own?ownSources():null;
-  const srcOf=e=>{ if(OS){ const vk=OWN_MAP[e.vowel]||'ma', k=e.syl&&OS[e.syl]?e.syl:(OS[vk]?vk:Object.keys(OS)[0]); return OS[k]; }
-    return V[HV_MAP[e.vowel]||'a']||V.a; };
+  const srcOf=e=>{ if(OS){ const vk=OWN_MAP[e.vowel]||'ma', k=e.syl&&OS[e.syl]?e.syl:(OS[vk]?vk:Object.keys(OS)[0]); return prepSource(OS[k]); }
+    return prepSource(V[HV_MAP[e.vowel]||'a']||V.a); };
+  // irregular walk through the steady vowel (reflecting at the ends, random turns) – avoids the audible loop of a strict ping-pong
+  const walkers=new Map();
+  const walk=(S,dt,reset)=>{ const m=S.m, a=m[S.wa], b=m[S.wb], L=(b-a)/sr;
+    let w=walkers.get(S); if(!w){ w={u:rand()*L*.5,dir:1}; walkers.set(S,w); }
+    if(reset){ w.u=0; w.dir=1; }
+    w.u+=w.dir*dt; if(rand()<dt*1.8&&w.u>.06&&w.u<L-.06) w.dir=-w.dir;
+    if(w.u>L){ w.u=2*L-w.u; w.dir=-1; } if(w.u<0){ w.u=-w.u; w.dir=1; }
+    return a+w.u*sr; };
+  const nearMark=(m,pos)=>{ let lo=1, hi=m.length-2; while(hi-lo>1){ const mid=(lo+hi)>>1; if(m[mid]<=pos) lo=mid; else hi=mid; } return pos-m[lo]<m[hi]-pos?lo:hi; };
+  let lastOnsetEi=-1;
   // own recording: the hummed m at the note start (squeezed for short notes), then ping-pong inside the steady vowel
   const ownMark=(S,since,dur,onset,off)=>{ const m=S.m, a=m[S.i0], b=m[S.i1]; let pos;
     const od=(a-m[0])/sr, avail=onset?Math.min(od,dur*.35):0;
@@ -1468,9 +1496,13 @@ function humanVoice(out,evs,T0,mD,o){
   const markAt=(S,tt)=>{ const m=S.m, L=(m[m.length-2]-m[1])/sr, q=((tt%(2*L))+2*L)%(2*L), u=q<L?q:2*L-q, pos=m[1]+u*sr;
     let lo=1, hi=m.length-2; while(hi-lo>1){ const mid=(lo+hi)>>1; if(m[mid]<=pos) lo=mid; else hi=mid; }
     return pos-m[lo]<m[hi]-pos?lo:hi; };
-  const grain=(S,k,c,amp)=>{ const x=S.x, m=S.m, P=Math.max(20,Math.round((m[k+1]-m[k-1])/2)), mc=m[k];
-    for(let j=-P;j<=P;j++){ const oi=c+j, si=mc+j; if(oi<0||oi>=n||si<0||si>=x.length) continue;
-      out[oi]+=amp*x[si]*.5*(1+Math.cos(Math.PI*j/P)); } };
+  // grain at a fractional output position (no rounding jitter), window over two source periods
+  const grain=(S,k,c,amp)=>{ const x=S.x, m=S.m, P=Math.max(12,(m[k+1]-m[k-1])/2), mc=m[k];
+    const o0=Math.max(0,Math.ceil(c-P)), o1=Math.min(n-1,Math.floor(c+P));
+    for(let oi=o0;oi<=o1;oi++){ const j=oi-c, sp=mc+j, i0=Math.floor(sp), fr=sp-i0; if(i0<0||i0+1>=x.length) continue;
+      out[oi]+=amp*(x[i0]+(x[i0+1]-x[i0])*fr)*.5*(1+Math.cos(Math.PI*j/P)); } };
+  // even out level differences between the recorded pulses inside the vowel
+  const gnorm=(S,k)=>{ if(k<S.ga||k>S.gb||!S.ge[k]) return 1; return Math.max(.65,Math.min(1.5,S.gref/S.ge[k])); };
   const last=evs[evs.length-1], stopAt=last.t+last.d+.05;
   while(true){
     const at=T0+t-o.offs; if(T0+t>stopAt) break;
@@ -1483,16 +1515,21 @@ function humanVoice(out,evs,T0,mD,o){
     // vibrato grows during long notes, plus natural jitter and a small scoop into "m" notes
     const since=Math.max(0,at-e.t), vd=vDepth*Math.min(1,Math.max(0,(since-.18)/.35));
     jv+=(rand()*2-1)*1.2; jv*=.92; jit=jit*.9+jv*.1;
-    let cents=o.cents+vd*Math.sin(ph)+jit*4;
+    let cents=o.cents+vd*Math.sin(ph)+jit*jitAmt;
     if(mD){ const md=mD[ei]; if(since<md*.6) cents-=35; else if(since<md+.06) cents-=35*Math.max(0,1-(since-md*.6)/(md*.4+.06)); }
     const f=440*Math.pow(2,(p-69)/12+cents/1200), Pout=sr/f;
     // vowel (cross-fade at a vowel change)
     const S=srcOf(e); let w=1, S2=null;
     if(pv&&since<xf){ const Sp=srcOf(pv); if(Sp!==S){ S2=Sp; w=since/xf; } }
-    const c=Math.round(t*sr), tt=since+o.offs*3;
-    const k=S.own?ownMark(S,since,e.d,!!e.syl,o.offs*3):markAt(S,tt), Pin=(S.m[k+1]-S.m[k-1])/2, amp=Math.sqrt(Math.min(1.6,Pout/Pin));
-    grain(S,k,c,amp*w);
-    if(S2){ grain(S2,S2.own?ownMark(S2,since+.3,1e9,false,0):markAt(S2,tt+.3),c,amp*(1-w)); }
+    const c=t*sr, dt=1/f;
+    let k;
+    if(S.own&&e.syl){ const m=S.m, od=(m[S.i0]-m[0])/sr, avail=Math.min(od,e.d*.35);
+      if(since<avail){ k=nearMark(m,m[0]+(since/avail)*(m[S.i0]-m[0])); lastOnsetEi=ei; }
+      else { const rs=lastOnsetEi===ei; if(rs) lastOnsetEi=-1; k=nearMark(m,walk(S,dt,rs)); } }
+    else k=nearMark(S.m,walk(S,dt,false));
+    const Pin=(S.m[k+1]-S.m[k-1])/2, amp=Math.sqrt(Math.min(1.6,Pout/Pin));
+    grain(S,k,c,amp*w*gnorm(S,k));
+    if(S2){ const k2=nearMark(S2.m,walk(S2,0,false)); grain(S2,k2,c,amp*(1-w)*gnorm(S2,k2)); }
     t+=1/f; ph+=2*Math.PI*vRate/f;
   }
 }
