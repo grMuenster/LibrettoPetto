@@ -337,6 +337,9 @@ body.cap-open #app{height:calc(100% - var(--caph,0px))!important}
 .capkb .bk{position:absolute;top:0;height:60%;background:#2A1A0E;border-radius:0 0 4px 4px;z-index:2}
 .capkb .wk.down{background:var(--accent);color:#fff}
 .capkb .bk.down{background:var(--accent)}
+#capResetTop .capcnt{display:inline-block;min-width:16px;margin-left:5px;padding:0 5px;border-radius:9px;background:var(--accent);color:#fff;font-size:11px;line-height:16px;text-align:center}
+#capResetTop .capcnt:empty{display:none}
+#capResetTop:disabled{opacity:.45}
 #capTempo{width:56px;border:1px solid var(--line);border-radius:6px;padding:2px 4px;background:#fff}
 @media (max-width:600px){ .capkb{height:108px} .caprow{font-size:12px} }
 @media (max-height:520px){ #capPanel{padding:4px 8px} .capkb{height:66px} .caprow{margin-bottom:3px;gap:4px 8px} .caprow .btn{padding:2px 8px} .caprow .seg button{padding:2px 6px} #capInfo{font-size:11.5px} }
@@ -357,6 +360,7 @@ body.cap-open #app{height:calc(100% - var(--caph,0px))!important}
     <button class="btn" id="undoBtn" title="Rückgängig (Strg+Z)">↶</button>
     <button class="btn" id="redoBtn" title="Wiederholen (Strg+Umschalt+Z)">↷</button>
     <button class="btn primary" id="playBtn" title="Abspielen (Leertaste)">▶<span class="lbl"> Abspielen</span></button>
+    <button class="btn" id="capResetTop" title="Mitschnitt zurücksetzen: die eingespielten Noten verwerfen und neu einspielen">⟲<span class="lbl"> Mitschnitt</span><span id="capCnt" class="capcnt"></span></button>
   </div>
   <div class="spacer hsec"></div>
   <span id="status" class="hsec"></span>
@@ -2679,6 +2683,7 @@ function capLines(res){
 }
 function capUpdate(){
   const res=capAnalyse(); cap.res=res;
+  { const n=cap.notes.length, b=$('#capResetTop'); if(b){ $('#capCnt').textContent=n?n:''; b.disabled=!n; } }
   const info=$('#capInfo'), midi=cap.midiName?` · MIDI: ${cap.midiName}`:'';
   if(!res){ info.textContent='Spiel einfach los – Tasten A W S E D F T G Z H U J K, Oktave Y/X, Maus/Touch oder MIDI-Keyboard'+midi; if(cap.tm!=='song'&&!cap.tmLocked) $('#capTempo').value=''; return; }
   if(cap.tm==='auto'&&!cap.tmLocked) $('#capTempo').value=res.det||'';
@@ -2838,7 +2843,8 @@ function capMidi(){
   }).catch(()=>{ cap.midi='denied'; });
 }
 $('#capOctDn').onclick=()=>capShift(-12); $('#capOctUp').onclick=()=>capShift(12);
-$('#capClear').onclick=()=>{ capAllOff(); cap.notes=[]; cap.tmLocked=false; capUpdate(); };
+function capReset(){ capAllOff(); cap.notes=[]; cap.tmLocked=false; capUpdate(); toast('Mitschnitt zurückgesetzt'); }
+$('#capClear').onclick=capReset; $('#capResetTop').onclick=capReset;
 $('#capOk').onclick=capInsert; $('#capPlay').onclick=capPreview;
 $('#capTmSeg').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; cap.tm=b.dataset.v; cap.tmLocked=false; setSeg('#capTmSeg',cap.tm); if(cap.tm==='song') $('#capTempo').value=song.tempo; capUpdate(); });
 $('#capGrid').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; cap.grid=b.dataset.v; setSeg('#capGrid',cap.grid); capUpdate(); });
